@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>CodeTrace</title>
+    <link rel="stylesheet" href="/vendor/xterm/xterm.css">
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <div class="brand">
+          <div class="brand-mark">CT</div>
+          <div class="brand-copy">
+            <div class="brand-title">CodeTrace</div>
+            <div class="brand-subtitle" id="projectSubtitle">No project indexed</div>
+          </div>
+        </div>
+
+        <form class="path-form" id="pathForm">
+          <input id="rootPathInput" name="rootPath" type="text" spellcheck="false" placeholder="Choose a project directory">
+        </form>
+
+        <div class="status-pill" id="statusPill">Idle</div>
+      </header>
+
+      <main class="workspace shell-collapsed" id="workspace">
+        <aside class="sidebar">
+          <div class="sidebar-logo" aria-label="ctrace">
+            <div class="sidebar-logo-mark">ct</div>
+            <div>
+              <div class="sidebar-logo-title">ctrace</div>
+              <div class="sidebar-logo-subtitle">runtime trace</div>
+            </div>
+          </div>
+          <section class="panel project-panel">
+            <div class="panel-header">
+              <h2>Projects</h2>
+              <div class="project-actions">
+                <span id="projectCount">0 loaded</span>
+                <button class="icon-button" id="addProjectButton" type="button" title="Add project">+</button>
+                <button class="secondary-button" id="indexButton" type="button">Index</button>
+              </div>
+            </div>
+            <details class="sidebar-section recent-section" id="recentSection">
+              <summary>Recent</summary>
+              <div class="recent-list" id="recentList"></div>
+            </details>
+            <div class="project-list" id="projectList"></div>
+            <div class="explorer-header">
+              <span>Explorer</span>
+              <span id="fileCount">0 files</span>
+            </div>
+            <div class="file-tree" id="fileTree"></div>
+          </section>
+
+          <section class="legacy-panel hidden">
+            <span id="symbolCount">0 symbols</span>
+            <input id="searchInput" class="search-input" type="search" spellcheck="false" placeholder="Class, function, module, file">
+            <div class="result-list" id="resultList"></div>
+            <div class="file-list" id="fileList"></div>
+          </section>
+        </aside>
+
+        <button class="sidebar-toggle" id="sidebarToggleButton" type="button" title="Collapse sidebar">&lt;</button>
+
+        <section class="graph-pane" id="graphPane">
+          <div class="pane-toolbar graph-toolbar">
+            <div class="pane-heading">
+              <h1 id="graphTitle">Runtime Trace</h1>
+              <p id="graphMeta">Choose a project directory, then trace a command or capture shell output.</p>
+            </div>
+            <div class="graph-actions">
+              <button class="secondary-button" id="overviewButton" type="button">Reset</button>
+              <button class="secondary-button shell-toolbar-button" id="terminalToggleButton" type="button">Shell</button>
+            </div>
+          </div>
+          <div class="graph-tools-row">
+            <div class="graph-legend" id="graphLegend">
+              <span><i class="legend-swatch" style="background:#79a8ff"></i>Start</span>
+              <span><i class="legend-swatch" style="background:#9bbf55"></i>Import</span>
+              <span><i class="legend-swatch" style="background:#35d0ba"></i>Call</span>
+              <span><i class="legend-swatch" style="background:#cfd6df"></i>Line</span>
+              <span><i class="legend-swatch" style="background:#8fd17f"></i>Return</span>
+              <span><i class="legend-swatch" style="background:#f2b84b"></i>Output</span>
+              <span><i class="legend-swatch" style="background:#ef718d"></i>Fatal</span>
+            </div>
+            <div class="zoom-controls" aria-label="Graph zoom">
+              <button class="secondary-button" id="zoomOutButton" type="button">-</button>
+              <span id="zoomValue">100%</span>
+              <button class="secondary-button" id="zoomInButton" type="button">+</button>
+              <button class="secondary-button" id="zoomResetButton" type="button">1:1</button>
+            </div>
+            <div class="graph-search">
+              <input id="graphSearchInput" type="search" spellcheck="false" placeholder="Find node in graph">
+              <button class="secondary-button" id="graphSearchPrevButton" type="button">Prev</button>
+              <button class="secondary-button" id="graphSearchNextButton" type="button">Next</button>
+              <span id="graphSearchMeta">0</span>
+            </div>
+          </div>
+          <form class="trace-bar hidden" id="traceForm">
+            <input id="traceCommandInput" type="text" spellcheck="false" placeholder="python app.py" aria-label="Trace command">
+            <button id="traceRunButton" type="submit">Trace Run</button>
+            <button class="secondary-button" id="traceStopButton" type="button">Stop</button>
+            <span id="traceMeta">No trace</span>
+          </form>
+          <div class="graph-frame">
+            <svg id="graphSvg" role="img" aria-label="Code graph"></svg>
+          </div>
+          <section class="editor-drawer hidden" id="editorDrawer">
+            <div class="pane-toolbar compact drawer-drag-handle" id="editorDragHandle">
+              <div class="pane-heading">
+                <h2 id="codeTitle">Code</h2>
+                <p id="codeMeta">No file selected</p>
+              </div>
+              <div class="editor-actions">
+                <input class="code-search-input" id="codeSearchInput" type="search" spellcheck="false" placeholder="Find">
+                <button class="secondary-button" id="codeSearchPrevButton" type="button">Prev</button>
+                <button class="secondary-button" id="codeSearchNextButton" type="button">Next</button>
+                <button class="secondary-button" id="editorPopoutButton" type="button">Pop out</button>
+                <button class="secondary-button" id="editorCloseButton" type="button">Close</button>
+                <button class="secondary-button" id="editButton" type="button" disabled>Edit</button>
+                <button class="primary-small hidden" id="saveButton" type="button">Save</button>
+                <button class="secondary-button hidden" id="cancelButton" type="button">Cancel</button>
+              </div>
+            </div>
+            <div class="outline" id="outline"></div>
+            <pre class="code-view" id="codeView"><code></code></pre>
+            <textarea class="code-editor hidden" id="codeEditor" spellcheck="false"></textarea>
+            <div class="drawer-resize-handle" id="editorResizeHandle"></div>
+          </section>
+        </section>
+
+        <aside class="inspector collapsed" id="inspector">
+          <div class="inspector-resize-handle" id="inspectorResizeHandle" title="Resize shell"></div>
+          <section class="terminal-pane">
+            <div class="terminal-header">
+              <h2>Shell</h2>
+              <div class="terminal-actions">
+                <button class="secondary-button" id="terminalCloseButton" type="button">Hide</button>
+                <button class="secondary-button" id="terminalStartButton" type="button">Connect</button>
+                <button class="secondary-button" id="terminalClearButton" type="button">Clear</button>
+              </div>
+            </div>
+            <div class="terminal-output" id="terminalOutput" tabindex="0"></div>
+          </section>
+        </aside>
+      </main>
+    </div>
+
+    <div class="modal hidden" id="browseModal" role="dialog" aria-modal="true" aria-labelledby="browseTitle">
+      <div class="modal-backdrop" id="browseBackdrop"></div>
+      <div class="modal-panel">
+        <div class="modal-header">
+          <div>
+            <h2 id="browseTitle">Browse</h2>
+            <p id="browseMeta">Select a project root on the server filesystem.</p>
+          </div>
+          <button class="secondary-button" id="browseCloseButton" type="button">Close</button>
+        </div>
+        <div class="browse-controls">
+          <button class="secondary-button" id="browseHomeButton" type="button">Home</button>
+          <button class="secondary-button" id="browseUpButton" type="button">Up</button>
+          <input id="browsePathInput" type="text" spellcheck="false">
+          <button id="browseGoButton" type="button">Go</button>
+        </div>
+        <div class="browse-entries" id="browseEntries"></div>
+        <div class="modal-footer">
+          <button class="secondary-button" id="browseUseButton" type="button">Use Path</button>
+          <button id="browseIndexButton" type="button">Index Project</button>
+        </div>
+      </div>
+    </div>
+
+    <script src="/vendor/xterm/xterm.js"></script>
+    <script src="/vendor/xterm/addon-fit.js"></script>
+    <script src="/app.js"></script>
+  </body>
+</html>

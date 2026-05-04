@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>CodeTrace Editor</title>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body class="editor-page">
+    <header class="editor-topbar">
+      <div class="editor-title">
+        <h1 id="editorTitle">CodeTrace Editor</h1>
+        <p id="editorMeta">Loading</p>
+      </div>
+      <div class="editor-page-actions">
+        <input id="editorSearchInput" type="search" spellcheck="false" placeholder="Find">
+        <button class="secondary-button" id="editorPrevButton" type="button">Prev</button>
+        <button class="secondary-button" id="editorNextButton" type="button">Next</button>
+        <button class="secondary-button" id="editorReloadButton" type="button">Reload</button>
+        <button class="secondary-button" id="editorEditButton" type="button">Edit</button>
+        <button class="primary-small hidden" id="editorSaveButton" type="button">Save</button>
+        <button class="secondary-button hidden" id="editorCancelButton" type="button">Cancel</button>
+      </div>
+    </header>
+    <main class="editor-main">
+      <pre class="code-view editor-code-view" id="editorCodeTraceView"><code></code></pre>
+      <textarea class="code-editor editor-code-editor hidden" id="editorCodeEditor" spellcheck="false"></textarea>
+    </main>
+    <script src="/editor.js"></script>
+  </body>
+</html>

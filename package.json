@@ -1,0 +1,38 @@
+{
+  "name": "@codetrace/cli",
+  "version": "0.1.0",
+  "description": "Browser-based Python runtime trace explorer.",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
+  "bin": {
+    "ctrace": "bin/ctrace.js"
+  },
+  "scripts": {
+    "serve": "node ./bin/ctrace.js serve",
+    "start": "node ./bin/ctrace.js serve",
+    "check": "node --check ./bin/ctrace.js && node --check ./src/server.js && node --check ./public/app.js && node --check ./public/editor.js"
+  },
+  "keywords": [
+    "python",
+    "code",
+    "graph",
+    "browser",
+    "trace",
+    "runtime",
+    "workflow"
+  ],
+  "files": [
+    "bin/",
+    "src/server.js",
+    "src/python/*.py",
+    "public/",
+    "README.md"
+  ],
+  "author": "",
+  "dependencies": {
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/xterm": "^6.0.0"
+  }
+}
