@@ -8,6 +8,10 @@ The npm package is `@codetrace/cli`. The command name is `ctrace`.
 
 [Watch the CodeTrace demo on Bilibili](https://www.bilibili.com/video/BV19yRiB8EoV/?vd_source=c89f5d5b919d036b4d8f0e7bf1406833)
 
+[Watch the CodeTrace demo on YouTube](https://www.youtube.com/watch?v=ca8MJnw-QWg)
+
+![CodeTrace demo](./ctrace-demo.png)
+
 ## Install
 
 ```bash
