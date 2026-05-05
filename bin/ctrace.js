@@ -24,7 +24,7 @@ Examples:
   ctrace serve -h 0.0.0.0 -p 3038
   cd /path/to/project && ctrace run python app.py
   ctrace run -r /path/to/project python app.py
-  cd /home/reid/github/vllm/vllm && ctrace run /home/reid/github/vllm/.venv/bin/vllm --help
+  ctrace run -r /path/to/project /path/to/venv/bin/some-python-cli --help
   ctrace doctor
 `);
 }
