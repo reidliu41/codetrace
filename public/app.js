@@ -19,6 +19,8 @@ const state = {
   graphSearchIndex: -1,
   traceEvents: [],
   activeTraceNodeId: "",
+  stepReplay: false,
+  traceReplayIndex: -1,
   traceRunning: false,
   traceEventSource: null,
   traceRenderTimer: null,
@@ -49,6 +51,10 @@ const state = {
   fileTreeExpanded: new Set([""]),
   browsePath: "",
   browseHome: "",
+};
+
+const STORAGE_KEYS = {
+  stepReplay: "codetrace.stepReplay",
 };
 
 const els = {
@@ -88,6 +94,7 @@ const els = {
   traceForm: document.getElementById("traceForm"),
   traceCommandInput: document.getElementById("traceCommandInput"),
   traceRunButton: document.getElementById("traceRunButton"),
+  traceStepReplayInput: document.getElementById("traceStepReplayInput"),
   tracePrevButton: document.getElementById("tracePrevButton"),
   traceNextButton: document.getElementById("traceNextButton"),
   traceStopButton: document.getElementById("traceStopButton"),
@@ -1213,6 +1220,35 @@ function visibleTraceWindow(events, limit = 420) {
   ];
 }
 
+function traceNodeIdForEvent(event, index) {
+  return `trace:${event?.id || index}`;
+}
+
+function normalizeTraceReplayIndex(events) {
+  if (!state.stepReplay) {
+    return events.length - 1;
+  }
+  if (!events.length) {
+    state.traceReplayIndex = -1;
+    return -1;
+  }
+  if (!Number.isInteger(state.traceReplayIndex) || state.traceReplayIndex < 0) {
+    state.traceReplayIndex = 0;
+  }
+  state.traceReplayIndex = Math.min(state.traceReplayIndex, events.length - 1);
+  return state.traceReplayIndex;
+}
+
+function traceMetaText() {
+  if (state.stepReplay) {
+    const events = traceGraphEvents(state.traceEvents);
+    const current = events.length ? Math.min(Math.max(state.traceReplayIndex, 0), events.length - 1) + 1 : 0;
+    const suffix = state.traceRunning ? " - buffering" : "";
+    return `${current}/${events.length} steps${suffix}`;
+  }
+  return `${state.traceEvents.length} events${state.traceRunning ? " - running" : state.traceEvents.length ? " - last run" : ""}`;
+}
+
 function traceSubtitle(event, startTs) {
   const location = event.line ? `${event.file || ""}:${event.line}` : event.file || "";
   if (event.type === "line") {
@@ -1260,7 +1296,7 @@ function traceSubtitle(event, startTs) {
     return parts.join(" | ");
   }
   if (event.type === "trace_wait") {
-    return event.location || "program is still running";
+    return event.location || "waiting for Next";
   }
   if (event.type === "trace_omitted") {
     return "middle events hidden to keep the graph readable";
@@ -1269,16 +1305,20 @@ function traceSubtitle(event, startTs) {
 }
 
 function buildTraceGraph() {
-  const visibleEvents = traceGraphEvents(state.traceEvents);
-  const events = visibleTraceWindow(visibleEvents);
+  const sourceEvents = traceGraphEvents(state.traceEvents);
+  const replayIndex = normalizeTraceReplayIndex(sourceEvents);
+  const replayComplete = !state.stepReplay || replayIndex >= sourceEvents.length - 1;
+  const hiddenByReplay = state.stepReplay && replayIndex >= 0 && replayIndex < sourceEvents.length - 1;
+  const displayedEvents = state.stepReplay && replayIndex >= 0 ? sourceEvents.slice(0, replayIndex + 1) : sourceEvents;
+  const events = visibleTraceWindow(displayedEvents);
   const allEvents = state.traceEvents;
-  const startTs = allEvents[0]?.ts || visibleEvents[0]?.ts || events[0]?.ts || 0;
+  const startTs = allEvents[0]?.ts || sourceEvents[0]?.ts || events[0]?.ts || 0;
   const nodes = [];
   const edges = [];
   const eventNodeByTraceId = new Map();
 
   events.forEach((event, index) => {
-    const id = `trace:${event.id || index}`;
+    const id = traceNodeIdForEvent(event, index);
     eventNodeByTraceId.set(event.id, id);
     nodes.push({
       id,
@@ -1302,7 +1342,7 @@ function buildTraceGraph() {
       edges.push({
         id: `trace-edge:${index}`,
         type: "trace-seq",
-        sourceId: `trace:${events[index - 1].id || index - 1}`,
+        sourceId: traceNodeIdForEvent(events[index - 1], index - 1),
         targetId: id,
         label: "next",
       });
@@ -1312,7 +1352,40 @@ function buildTraceGraph() {
   const lastVisible = events[events.length - 1] || null;
   const lastVisibleNodeId = lastVisible ? eventNodeByTraceId.get(lastVisible.id) : null;
   const endEvent = [...allEvents].reverse().find((event) => ["finish", "process_close", "system_exit"].includes(event.type));
-  if (!state.traceRunning && endEvent && lastVisibleNodeId) {
+  if (state.stepReplay && lastVisibleNodeId && (hiddenByReplay || state.traceRunning)) {
+    const waitEvent = {
+      id: "wait",
+      type: "trace_wait",
+      ts: Date.now() / 1000,
+      depth: Math.min(lastVisible.depth || 0, 8),
+      location: hiddenByReplay ? "press Next to reveal buffered trace" : "waiting for next trace event",
+    };
+    const id = "trace:wait";
+    nodes.push({
+      id,
+      entityType: "trace",
+      kind: traceKind(waitEvent.type),
+      name: traceLabel(waitEvent),
+      subtitle: traceSubtitle(waitEvent, startTs),
+      qualifiedName: "waiting for step replay",
+      external: false,
+      selected: false,
+      fileId: null,
+      symbolId: null,
+      relativePath: null,
+      line: null,
+      depth: waitEvent.depth,
+      childCount: 0,
+      traceEvent: waitEvent,
+    });
+    edges.push({
+      id: "trace-edge:wait",
+      type: "trace-seq",
+      sourceId: lastVisibleNodeId,
+      targetId: id,
+      label: "wait",
+    });
+  } else if (!state.traceRunning && replayComplete && endEvent && lastVisibleNodeId) {
     const endTs = endEvent.ts || allEvents[allEvents.length - 1]?.ts || startTs;
     const exitEvent = [...allEvents].reverse().find((event) => event.exitCode !== undefined || event.code !== undefined);
     const totalEvent = {
@@ -1349,7 +1422,7 @@ function buildTraceGraph() {
       targetId: id,
       label: "total",
     });
-  } else if (state.traceRunning && lastVisibleNodeId) {
+  } else if (!state.stepReplay && state.traceRunning && lastVisibleNodeId) {
     const nowTs = Date.now() / 1000;
     const waitEvent = {
       id: "wait",
@@ -1405,7 +1478,8 @@ function buildTraceGraph() {
   }
 
   const activeNodeExists = state.activeTraceNodeId && nodes.some((node) => node.id === state.activeTraceNodeId);
-  const selectedNodeId = activeNodeExists ? state.activeTraceNodeId : nodes[nodes.length - 1]?.id || "";
+  const fallbackNode = [...nodes].reverse().find((node) => node.kind !== "trace-wait") || nodes[nodes.length - 1];
+  const selectedNodeId = activeNodeExists ? state.activeTraceNodeId : fallbackNode?.id || "";
   for (const node of nodes) {
     node.selected = node.id === selectedNodeId;
   }
@@ -1415,7 +1489,7 @@ function buildTraceGraph() {
     title: "Runtime Trace",
     nodes,
     edges,
-    limited: state.traceEvents.length > events.length,
+    limited: sourceEvents.length > displayedEvents.length || displayedEvents.length > events.length,
   };
 }
 
@@ -1426,6 +1500,7 @@ function handleTraceEvent(event) {
   if (event.type === "trace_session") {
     state.traceEvents = [];
     state.activeTraceNodeId = "";
+    state.traceReplayIndex = state.stepReplay ? 0 : -1;
     state.nodePositions.clear();
     state.traceRunning = true;
     if (event.command) {
@@ -1453,7 +1528,7 @@ function applyTraceState(payload) {
   if (payload.command) {
     els.traceCommandInput.value = payload.command;
   }
-  els.traceMeta.textContent = `${state.traceEvents.length} events${state.traceRunning ? " - running" : " - last run"}`;
+  els.traceMeta.textContent = traceMetaText();
   if (state.mode === "trace") {
     state.graph = buildTraceGraph();
     els.graphTitle.textContent = "Runtime Trace";
@@ -1471,7 +1546,7 @@ async function refreshTraceState() {
 }
 
 function scheduleTraceRender() {
-  els.traceMeta.textContent = `${state.traceEvents.length} events${state.traceRunning ? " - running" : " - last run"}`;
+  els.traceMeta.textContent = traceMetaText();
   if (state.mode !== "trace") {
     return;
   }
@@ -1484,7 +1559,7 @@ function scheduleTraceRender() {
     els.graphTitle.textContent = "Runtime Trace";
     els.graphMeta.textContent = `${state.traceEvents.length} trace events${state.traceRunning ? " - running" : ""}`;
     renderGraph();
-    if (state.traceRunning && !state.activeTraceNodeId) {
+    if (state.traceRunning && !state.activeTraceNodeId && !state.stepReplay) {
       els.graphFrame.scrollTop = els.graphFrame.scrollHeight;
     }
   }, 120);
@@ -1506,7 +1581,7 @@ function connectTraceEvents() {
       return;
     }
     state.traceRunning = Boolean(payload.running);
-    els.traceMeta.textContent = state.traceRunning ? "running" : state.traceEvents.length ? "last run" : "No trace";
+    els.traceMeta.textContent = traceMetaText();
   });
   events.addEventListener("trace", (event) => {
     handleTraceEvent(JSON.parse(event.data));
@@ -1524,6 +1599,7 @@ async function startTraceRun(command) {
   }
   setMode("trace");
   state.activeTraceNodeId = "";
+  state.traceReplayIndex = state.stepReplay ? 0 : -1;
   state.traceEvents = [
     {
       id: `pending-${Date.now()}`,
@@ -2229,18 +2305,29 @@ async function openTraceNodeSource(node) {
 }
 
 async function selectTraceNode(nodeOrId, options = {}) {
-  const node =
+  let node =
     typeof nodeOrId === "string" ? (state.graph.nodes || []).find((item) => item.id === nodeOrId) : nodeOrId;
   if (!node || node.entityType !== "trace") {
     return;
   }
 
   state.activeTraceNodeId = node.id;
+  if (state.stepReplay && node.kind !== "trace-wait") {
+    const events = traceGraphEvents(state.traceEvents);
+    const replayIndex = events.findIndex((event, index) => traceNodeIdForEvent(event, index) === node.id);
+    if (replayIndex >= 0) {
+      state.traceReplayIndex = replayIndex;
+      state.graph = buildTraceGraph();
+      node = (state.graph.nodes || []).find((item) => item.id === state.activeTraceNodeId) || node;
+    }
+  }
   applyTraceSelection(node.id);
   const nodes = traceNavigationNodes();
   const index = nodes.findIndex((item) => item.id === node.id);
   if (index >= 0) {
-    els.traceMeta.textContent = `${index + 1}/${nodes.length} trace nodes${state.traceRunning ? " - running" : ""}`;
+    els.traceMeta.textContent = state.stepReplay
+      ? traceMetaText()
+      : `${index + 1}/${nodes.length} trace nodes${state.traceRunning ? " - running" : ""}`;
   }
   renderGraph();
   scrollToGraphNode(node.id);
@@ -2251,6 +2338,10 @@ async function selectTraceNode(nodeOrId, options = {}) {
   }
   if (options.openCode && isOpenableTraceNode(node)) {
     await openTraceNodeSource(node);
+  } else if (options.syncCode) {
+    state.editing = false;
+    els.editorDrawer.classList.add("hidden");
+    syncEditorMode();
   }
 }
 
@@ -2258,6 +2349,31 @@ async function moveTraceStep(direction) {
   if (state.mode !== "trace" && state.traceEvents.length) {
     setMode("trace");
   }
+
+  if (state.stepReplay) {
+    const events = traceGraphEvents(state.traceEvents);
+    if (!events.length) {
+      els.traceMeta.textContent = "No trace";
+      return;
+    }
+    const currentIndex = normalizeTraceReplayIndex(events);
+    const nextIndex = clamp(currentIndex + direction, 0, events.length - 1);
+    if (nextIndex === currentIndex && direction > 0 && state.traceRunning) {
+      els.traceMeta.textContent = `${currentIndex + 1}/${events.length} steps - waiting`;
+      return;
+    }
+    state.traceReplayIndex = nextIndex;
+    state.activeTraceNodeId = traceNodeIdForEvent(events[nextIndex], nextIndex);
+    state.graph = buildTraceGraph();
+    renderGraph();
+    const nextNode = (state.graph.nodes || []).find((node) => node.id === state.activeTraceNodeId);
+    if (nextNode) {
+      await selectTraceNode(nextNode, { openCode: isOpenableTraceNode(nextNode), syncCode: true });
+    }
+    els.traceMeta.textContent = traceMetaText();
+    return;
+  }
+
   if (state.mode === "trace" && (!state.graph.nodes || !state.graph.nodes.length) && state.traceEvents.length) {
     state.graph = buildTraceGraph();
     renderGraph();
@@ -2272,7 +2388,24 @@ async function moveTraceStep(direction) {
   const nextIndex = (currentIndex + direction + nodes.length) % nodes.length;
   const nextNode = nodes[nextIndex];
   els.traceMeta.textContent = `${nextIndex + 1}/${nodes.length} trace nodes`;
-  await selectTraceNode(nextNode, { openCode: isOpenableTraceNode(nextNode) });
+  await selectTraceNode(nextNode, { openCode: isOpenableTraceNode(nextNode), syncCode: true });
+}
+
+function setStepReplay(enabled) {
+  state.stepReplay = Boolean(enabled);
+  els.traceStepReplayInput.checked = state.stepReplay;
+  try {
+    localStorage.setItem(STORAGE_KEYS.stepReplay, state.stepReplay ? "1" : "0");
+  } catch {
+    // Ignore storage failures in private or restricted browser contexts.
+  }
+  state.activeTraceNodeId = "";
+  state.traceReplayIndex = state.stepReplay && traceGraphEvents(state.traceEvents).length ? 0 : -1;
+  if (state.mode === "trace") {
+    state.graph = buildTraceGraph();
+    renderGraph();
+  }
+  els.traceMeta.textContent = traceMetaText();
 }
 
 function svgPoint(event) {
@@ -2430,19 +2563,14 @@ function startDrawerDrag(event) {
     return;
   }
   const rect = els.editorDrawer.getBoundingClientRect();
-  const parentRect = els.graphPane.getBoundingClientRect();
   state.drawerDrag = {
     offsetX: event.clientX - rect.left,
     offsetY: event.clientY - rect.top,
     width: rect.width,
     height: rect.height,
-    parentLeft: parentRect.left,
-    parentTop: parentRect.top,
-    parentWidth: parentRect.width,
-    parentHeight: parentRect.height,
   };
-  els.editorDrawer.style.left = `${rect.left - parentRect.left}px`;
-  els.editorDrawer.style.top = `${rect.top - parentRect.top}px`;
+  els.editorDrawer.style.left = `${rect.left}px`;
+  els.editorDrawer.style.top = `${rect.top}px`;
   els.editorDrawer.style.right = "auto";
   els.editorDrawer.style.bottom = "auto";
   els.editorDrawer.style.width = `${rect.width}px`;
@@ -2452,14 +2580,11 @@ function startDrawerDrag(event) {
 
 function startDrawerResize(event) {
   const rect = els.editorDrawer.getBoundingClientRect();
-  const parentRect = els.graphPane.getBoundingClientRect();
   state.drawerResize = {
     startX: event.clientX,
     startY: event.clientY,
     width: rect.width,
     height: rect.height,
-    parentWidth: parentRect.width,
-    parentHeight: parentRect.height,
   };
   event.preventDefault();
   event.stopPropagation();
@@ -2468,10 +2593,13 @@ function startDrawerResize(event) {
 function handleDocumentPointerMove(event) {
   if (state.drawerDrag) {
     const drag = state.drawerDrag;
-    const maxLeft = Math.max(0, drag.parentWidth - drag.width - 8);
-    const maxTop = Math.max(0, drag.parentHeight - drag.height - 8);
-    const left = clamp(event.clientX - drag.parentLeft - drag.offsetX, 8, maxLeft);
-    const top = clamp(event.clientY - drag.parentTop - drag.offsetY, 8, maxTop);
+    const visibleHandle = 120;
+    const minLeft = Math.min(8, visibleHandle - drag.width);
+    const maxLeft = Math.max(8, window.innerWidth - visibleHandle);
+    const minTop = 8;
+    const maxTop = Math.max(8, window.innerHeight - 72);
+    const left = clamp(event.clientX - drag.offsetX, minLeft, maxLeft);
+    const top = clamp(event.clientY - drag.offsetY, minTop, maxTop);
     els.editorDrawer.style.left = `${left}px`;
     els.editorDrawer.style.top = `${top}px`;
     return;
@@ -2479,8 +2607,8 @@ function handleDocumentPointerMove(event) {
 
   if (state.drawerResize) {
     const resize = state.drawerResize;
-    const width = clamp(resize.width + event.clientX - resize.startX, 460, resize.parentWidth - 32);
-    const height = clamp(resize.height + event.clientY - resize.startY, 300, resize.parentHeight - 92);
+    const width = clamp(resize.width + event.clientX - resize.startX, 420, Math.max(1200, window.innerWidth * 1.4));
+    const height = clamp(resize.height + event.clientY - resize.startY, 280, Math.max(900, window.innerHeight * 1.4));
     els.editorDrawer.style.width = `${width}px`;
     els.editorDrawer.style.height = `${height}px`;
     return;
@@ -2715,6 +2843,7 @@ function startShellCapture(command) {
   state.shellEventId += 1;
   state.traceRunning = false;
   state.activeTraceNodeId = "";
+  state.traceReplayIndex = state.stepReplay ? 0 : -1;
   state.nodePositions.clear();
   state.traceEvents = [
     {
@@ -2727,7 +2856,7 @@ function startShellCapture(command) {
     },
   ];
   setMode("trace");
-  els.traceMeta.textContent = "shell capture";
+  els.traceMeta.textContent = traceMetaText();
   state.graph = buildTraceGraph();
   renderGraph();
 }
@@ -2755,6 +2884,7 @@ function ingestShellTraceEvent(event) {
   if (!state.shellTraceReceived) {
     state.traceEvents = [];
     state.activeTraceNodeId = "";
+    state.traceReplayIndex = state.stepReplay ? 0 : -1;
     state.nodePositions.clear();
     state.traceRunning = true;
     setMode("trace");
@@ -2774,7 +2904,7 @@ function ingestShellTraceEvent(event) {
     state.shellCaptureActive = false;
     state.shellTraceJsonMode = false;
   }
-  els.traceMeta.textContent = `${state.traceEvents.length} ctrace events${state.traceRunning ? " - running" : " - last run"}`;
+  els.traceMeta.textContent = traceMetaText();
   scheduleTraceRender();
 }
 
@@ -2810,6 +2940,7 @@ function consumeShellTraceJson(text, stream = "stdout") {
 function clearTraceView() {
   state.traceEvents = [];
   state.activeTraceNodeId = "";
+  state.traceReplayIndex = -1;
   state.traceRunning = false;
   state.shellCaptureActive = false;
   state.shellTraceJsonMode = false;
@@ -3070,6 +3201,10 @@ function bindEvents() {
     startTraceRun(els.traceCommandInput.value).catch(showError);
   });
 
+  els.traceStepReplayInput.addEventListener("change", () => {
+    setStepReplay(els.traceStepReplayInput.checked);
+  });
+
   els.tracePrevButton.addEventListener("click", () => {
     moveTraceStep(-1).catch(showError);
   });
@@ -3176,6 +3311,11 @@ function bindEvents() {
 
 async function boot() {
   bindEvents();
+  try {
+    setStepReplay(localStorage.getItem(STORAGE_KEYS.stepReplay) === "1");
+  } catch {
+    setStepReplay(false);
+  }
   connectEvents();
   setMode("trace");
 

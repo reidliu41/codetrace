@@ -102,6 +102,10 @@
           <form class="trace-bar hidden" id="traceForm">
             <input id="traceCommandInput" type="text" spellcheck="false" placeholder="python app.py" aria-label="Trace command">
             <button id="traceRunButton" type="submit">Trace Run</button>
+            <label class="trace-step-toggle" title="Buffer trace events and reveal them one step at a time">
+              <input id="traceStepReplayInput" type="checkbox">
+              <span>Step Replay</span>
+            </label>
             <button class="secondary-button" id="tracePrevButton" type="button">Prev</button>
             <button class="secondary-button" id="traceNextButton" type="button">Next</button>
             <button class="secondary-button" id="traceStopButton" type="button">Stop</button>
