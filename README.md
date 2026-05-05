@@ -10,8 +10,6 @@ The npm package is `@codetrace/cli`. The command name is `ctrace`.
 
 [Watch the CodeTrace demo on YouTube](https://www.youtube.com/watch?v=ca8MJnw-QWg)
 
-<img width="1892" height="849" alt="ctrace-demo" src="https://github.com/user-attachments/assets/ff227a9f-2282-4bb4-98f3-1b8320e46ce8" />
-
 <img width="1644" height="826" alt="ctrace-step-replay" src="https://github.com/user-attachments/assets/c75fec5c-cb2f-42ff-b495-409dbe78fbf3" />
 
 ## Install
