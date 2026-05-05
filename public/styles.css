@@ -924,6 +924,36 @@ textarea:focus {
   font-weight: 740;
 }
 
+.trace-position-row {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) 88px 88px;
+  align-items: center;
+  gap: 8px;
+  width: calc(100% - 28px);
+  margin: 6px 14px 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: rgba(17, 19, 21, 0.9);
+  padding: 6px 8px;
+}
+
+.trace-position-row input[type="range"] {
+  height: 24px;
+  accent-color: var(--accent);
+}
+
+.trace-position-row input[type="number"] {
+  height: 28px;
+  padding: 0 8px;
+}
+
+.trace-position-row span {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 760;
+  text-align: right;
+}
+
 .trace-detail {
   width: calc(100% - 28px);
   margin: 6px 14px 0;

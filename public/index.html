@@ -122,6 +122,11 @@
             <label><input id="filterExceptionsInput" type="checkbox">Exceptions</label>
             <span id="traceFilterMeta"></span>
           </div>
+          <div class="trace-position-row hidden" id="tracePositionRow">
+            <input id="tracePositionSlider" type="range" min="1" value="1" aria-label="Trace position">
+            <input id="tracePositionInput" type="number" min="1" value="1" aria-label="Trace step">
+            <span id="tracePositionMeta">0 steps</span>
+          </div>
           <section class="trace-detail hidden" id="traceDetail"></section>
           <div class="graph-frame">
             <svg id="graphSvg" role="img" aria-label="Code graph"></svg>
