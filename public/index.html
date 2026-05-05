@@ -101,6 +101,7 @@
           </div>
           <form class="trace-bar hidden" id="traceForm">
             <input id="traceCommandInput" type="text" spellcheck="false" placeholder="python app.py" aria-label="Trace command">
+            <button class="secondary-button trace-clear-button" id="traceCommandClearButton" type="button" title="Clear command">x</button>
             <button id="traceRunButton" type="submit">Trace Run</button>
             <label class="trace-step-toggle" title="Buffer trace events and reveal them one step at a time">
               <input id="traceStepReplayInput" type="checkbox">
@@ -111,6 +112,17 @@
             <button class="secondary-button" id="traceStopButton" type="button">Stop</button>
             <span id="traceMeta">No trace</span>
           </form>
+          <div class="trace-filter-row hidden" id="traceFilterRow" aria-label="Trace filters">
+            <label><input id="filterRepoOnlyInput" type="checkbox">Repo Only</label>
+            <label><input id="filterCallsInput" type="checkbox">Calls</label>
+            <label><input id="filterLinesInput" type="checkbox">Lines</label>
+            <label><input id="filterImportsInput" type="checkbox">Imports</label>
+            <label><input id="filterReturnsInput" type="checkbox">Returns</label>
+            <label><input id="filterOutputInput" type="checkbox">Output</label>
+            <label><input id="filterExceptionsInput" type="checkbox">Exceptions</label>
+            <span id="traceFilterMeta"></span>
+          </div>
+          <section class="trace-detail hidden" id="traceDetail"></section>
           <div class="graph-frame">
             <svg id="graphSvg" role="img" aria-label="Code graph"></svg>
           </div>

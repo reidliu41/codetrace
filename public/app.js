@@ -19,6 +19,15 @@ const state = {
   graphSearchIndex: -1,
   traceEvents: [],
   activeTraceNodeId: "",
+  traceFilters: {
+    repoOnly: true,
+    calls: true,
+    lines: false,
+    imports: true,
+    returns: true,
+    output: true,
+    exceptions: true,
+  },
   stepReplay: false,
   traceReplayIndex: -1,
   traceRunning: false,
@@ -55,6 +64,7 @@ const state = {
 
 const STORAGE_KEYS = {
   stepReplay: "codetrace.stepReplay",
+  traceFilters: "codetrace.traceFilters",
 };
 
 const els = {
@@ -92,7 +102,18 @@ const els = {
   graphSearchNextButton: document.getElementById("graphSearchNextButton"),
   graphSearchMeta: document.getElementById("graphSearchMeta"),
   traceForm: document.getElementById("traceForm"),
+  traceFilterRow: document.getElementById("traceFilterRow"),
+  traceFilterMeta: document.getElementById("traceFilterMeta"),
+  traceDetail: document.getElementById("traceDetail"),
+  filterRepoOnlyInput: document.getElementById("filterRepoOnlyInput"),
+  filterCallsInput: document.getElementById("filterCallsInput"),
+  filterLinesInput: document.getElementById("filterLinesInput"),
+  filterImportsInput: document.getElementById("filterImportsInput"),
+  filterReturnsInput: document.getElementById("filterReturnsInput"),
+  filterOutputInput: document.getElementById("filterOutputInput"),
+  filterExceptionsInput: document.getElementById("filterExceptionsInput"),
   traceCommandInput: document.getElementById("traceCommandInput"),
+  traceCommandClearButton: document.getElementById("traceCommandClearButton"),
   traceRunButton: document.getElementById("traceRunButton"),
   traceStepReplayInput: document.getElementById("traceStepReplayInput"),
   tracePrevButton: document.getElementById("tracePrevButton"),
@@ -209,6 +230,7 @@ function setMode(mode) {
     }
   }
   els.traceForm.classList.remove("hidden");
+  els.traceFilterRow.classList.remove("hidden");
   renderLegend();
 }
 
@@ -1187,7 +1209,42 @@ function isImportSource(source) {
   return /^(import\s+\S+|from\s+\S+\s+import\s+)/.test(String(source || "").trim());
 }
 
-function traceGraphEvents(events) {
+function isRepoRelativeFile(filePath) {
+  const text = String(filePath || "");
+  return Boolean(text) && !text.startsWith("/") && !text.startsWith("<") && !/^[A-Za-z]:[\\/]/.test(text);
+}
+
+function isAlwaysVisibleTraceEvent(event) {
+  return ["trace_session", "shell_session", "start", "trace_wait", "trace_omitted", "trace_total"].includes(event.type);
+}
+
+function traceFilterAllows(event) {
+  const filters = state.traceFilters;
+  if (filters.repoOnly && event.file && !isRepoRelativeFile(event.file)) {
+    return isAlwaysVisibleTraceEvent(event) || ["output", "fatal"].includes(event.type);
+  }
+  if (event.type === "call") {
+    return filters.calls;
+  }
+  if (event.type === "line") {
+    return filters.lines;
+  }
+  if (event.type === "import") {
+    return filters.imports;
+  }
+  if (event.type === "return") {
+    return filters.returns;
+  }
+  if (event.type === "output") {
+    return filters.output;
+  }
+  if (["exception", "fatal", "system_exit", "limit"].includes(event.type)) {
+    return filters.exceptions;
+  }
+  return true;
+}
+
+function baseTraceGraphEvents(events) {
   return events.filter((event, index) => {
     if (["finish", "process_close"].includes(event.type)) {
       return false;
@@ -1198,6 +1255,16 @@ function traceGraphEvents(events) {
     const next = events[index + 1];
     return !(next && next.type === "import" && next.file === event.file && next.line === event.line);
   });
+}
+
+function traceGraphEvents(events) {
+  return baseTraceGraphEvents(events).filter(traceFilterAllows);
+}
+
+function traceFilterStats() {
+  const base = baseTraceGraphEvents(state.traceEvents);
+  const shown = base.filter(traceFilterAllows);
+  return { base: base.length, shown: shown.length, hidden: Math.max(0, base.length - shown.length) };
 }
 
 function visibleTraceWindow(events, limit = 420) {
@@ -1240,13 +1307,15 @@ function normalizeTraceReplayIndex(events) {
 }
 
 function traceMetaText() {
+  const stats = traceFilterStats();
+  const filterSuffix = stats.hidden ? ` (${stats.shown}/${stats.base} shown)` : "";
   if (state.stepReplay) {
     const events = traceGraphEvents(state.traceEvents);
     const current = events.length ? Math.min(Math.max(state.traceReplayIndex, 0), events.length - 1) + 1 : 0;
     const suffix = state.traceRunning ? " - buffering" : "";
-    return `${current}/${events.length} steps${suffix}`;
+    return `${current}/${events.length} steps${suffix}${filterSuffix}`;
   }
-  return `${state.traceEvents.length} events${state.traceRunning ? " - running" : state.traceEvents.length ? " - last run" : ""}`;
+  return `${state.traceEvents.length} events${state.traceRunning ? " - running" : state.traceEvents.length ? " - last run" : ""}${filterSuffix}`;
 }
 
 function traceSubtitle(event, startTs) {
@@ -1534,6 +1603,7 @@ function applyTraceState(payload) {
     els.graphTitle.textContent = "Runtime Trace";
     els.graphMeta.textContent = `${state.traceEvents.length} trace events${state.traceRunning ? " - running" : ""}`;
     renderGraph();
+    updateTraceFilterMeta();
   }
 }
 
@@ -1559,6 +1629,7 @@ function scheduleTraceRender() {
     els.graphTitle.textContent = "Runtime Trace";
     els.graphMeta.textContent = `${state.traceEvents.length} trace events${state.traceRunning ? " - running" : ""}`;
     renderGraph();
+    updateTraceFilterMeta();
     if (state.traceRunning && !state.activeTraceNodeId && !state.stepReplay) {
       els.graphFrame.scrollTop = els.graphFrame.scrollHeight;
     }
@@ -2029,6 +2100,7 @@ function renderGraph() {
     });
     text.textContent = state.project?.id ? "No graph data for this layer" : "No project indexed";
     svg.appendChild(text);
+    renderTraceDetail(null);
     return;
   }
 
@@ -2150,6 +2222,10 @@ function renderGraph() {
       }
     });
     nodeLayer.appendChild(group);
+  }
+
+  if (state.mode === "trace") {
+    renderTraceDetail(nodes.find((node) => node.selected && node.entityType === "trace") || null);
   }
 }
 
@@ -2304,6 +2380,85 @@ async function openTraceNodeSource(node) {
   return true;
 }
 
+function detailValue(value) {
+  if (!value || typeof value !== "object") {
+    return escapeHtml(String(value ?? ""));
+  }
+  const parts = [];
+  if (value.type) {
+    parts.push(String(value.type));
+  }
+  if (Object.prototype.hasOwnProperty.call(value, "value")) {
+    parts.push(JSON.stringify(value.value));
+  } else if (value.repr) {
+    parts.push(value.repr);
+  }
+  if (value.len !== undefined) {
+    parts.push(`len=${value.len}`);
+  }
+  return escapeHtml(truncate(parts.filter(Boolean).join(" "), 140));
+}
+
+function detailChip(label, value) {
+  return `<span class="trace-detail-chip"><b>${escapeHtml(label)}</b> ${value}</span>`;
+}
+
+function renderTraceDetail(node) {
+  if (state.mode !== "trace" || !node || node.kind === "trace-wait") {
+    els.traceDetail.classList.add("hidden");
+    els.traceDetail.innerHTML = "";
+    return;
+  }
+  const event = node.traceEvent || {};
+  const title = traceLabel(event);
+  const location = event.line ? `${event.file || ""}:${event.line}` : event.file || event.module || event.type || "";
+  const chips = [];
+  if (event.function) {
+    chips.push(detailChip("function", escapeHtml(event.function)));
+  }
+  if (event.module) {
+    chips.push(detailChip("module", escapeHtml(event.module)));
+  }
+  if (event.source) {
+    chips.push(detailChip("source", escapeHtml(truncate(event.source, 160))));
+  }
+  if (event.args) {
+    for (const [name, value] of Object.entries(event.args).slice(0, 8)) {
+      chips.push(detailChip(`arg ${name}`, detailValue(value)));
+    }
+  }
+  if (event.changed) {
+    for (const [name, value] of Object.entries(event.changed).slice(0, 10)) {
+      chips.push(detailChip(name, detailValue(value)));
+    }
+  }
+  if (event.removed?.length) {
+    chips.push(detailChip("removed", escapeHtml(event.removed.slice(0, 8).join(", "))));
+  }
+  if (event.returnValue) {
+    chips.push(detailChip("return", detailValue(event.returnValue)));
+  }
+  if (event.text) {
+    chips.push(detailChip(event.stream || "output", escapeHtml(truncate(String(event.text).trim(), 180))));
+  }
+  if (event.exceptionType) {
+    chips.push(detailChip("exception", escapeHtml(`${event.exceptionType}: ${event.message || ""}`)));
+  }
+
+  els.traceDetail.innerHTML = `
+    <div class="trace-detail-title">
+      <strong>${escapeHtml(title)}</strong>
+      <span>${escapeHtml(location)}</span>
+    </div>
+    ${
+      chips.length
+        ? `<div class="trace-detail-grid">${chips.join("")}</div>`
+        : `<div class="trace-detail-empty">No variable or event details captured for this step.</div>`
+    }
+  `;
+  els.traceDetail.classList.remove("hidden");
+}
+
 async function selectTraceNode(nodeOrId, options = {}) {
   let node =
     typeof nodeOrId === "string" ? (state.graph.nodes || []).find((item) => item.id === nodeOrId) : nodeOrId;
@@ -2406,6 +2561,58 @@ function setStepReplay(enabled) {
     renderGraph();
   }
   els.traceMeta.textContent = traceMetaText();
+}
+
+function syncTraceFilterInputs() {
+  els.filterRepoOnlyInput.checked = state.traceFilters.repoOnly;
+  els.filterCallsInput.checked = state.traceFilters.calls;
+  els.filterLinesInput.checked = state.traceFilters.lines;
+  els.filterImportsInput.checked = state.traceFilters.imports;
+  els.filterReturnsInput.checked = state.traceFilters.returns;
+  els.filterOutputInput.checked = state.traceFilters.output;
+  els.filterExceptionsInput.checked = state.traceFilters.exceptions;
+}
+
+function persistTraceFilters() {
+  try {
+    localStorage.setItem(STORAGE_KEYS.traceFilters, JSON.stringify(state.traceFilters));
+  } catch {
+    // Ignore storage failures in private or restricted browser contexts.
+  }
+}
+
+function updateTraceFilterMeta() {
+  const stats = traceFilterStats();
+  els.traceFilterMeta.textContent = stats.hidden ? `${stats.hidden} hidden` : "";
+}
+
+function setTraceFilters(nextFilters) {
+  state.traceFilters = { ...state.traceFilters, ...nextFilters };
+  syncTraceFilterInputs();
+  persistTraceFilters();
+  state.activeTraceNodeId = "";
+  state.traceReplayIndex = state.stepReplay && traceGraphEvents(state.traceEvents).length ? 0 : -1;
+  if (state.mode === "trace") {
+    state.graph = buildTraceGraph();
+    renderGraph();
+  }
+  updateTraceFilterMeta();
+  els.traceMeta.textContent = traceMetaText();
+}
+
+function loadTraceFilterSettings() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEYS.traceFilters);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === "object") {
+        state.traceFilters = { ...state.traceFilters, ...parsed };
+      }
+    }
+  } catch {
+    // Keep defaults if stored data is unavailable or malformed.
+  }
+  syncTraceFilterInputs();
 }
 
 function svgPoint(event) {
@@ -2951,6 +3158,8 @@ function clearTraceView() {
   state.graph = buildTraceGraph();
   els.traceMeta.textContent = "No trace";
   els.graphMeta.textContent = "Trace cleared";
+  updateTraceFilterMeta();
+  renderTraceDetail(null);
   renderGraph();
 }
 
@@ -3201,8 +3410,35 @@ function bindEvents() {
     startTraceRun(els.traceCommandInput.value).catch(showError);
   });
 
+  els.traceCommandClearButton.addEventListener("click", () => {
+    els.traceCommandInput.value = "";
+    els.traceCommandInput.focus();
+  });
+
   els.traceStepReplayInput.addEventListener("change", () => {
     setStepReplay(els.traceStepReplayInput.checked);
+  });
+
+  els.filterRepoOnlyInput.addEventListener("change", () => {
+    setTraceFilters({ repoOnly: els.filterRepoOnlyInput.checked });
+  });
+  els.filterCallsInput.addEventListener("change", () => {
+    setTraceFilters({ calls: els.filterCallsInput.checked });
+  });
+  els.filterLinesInput.addEventListener("change", () => {
+    setTraceFilters({ lines: els.filterLinesInput.checked });
+  });
+  els.filterImportsInput.addEventListener("change", () => {
+    setTraceFilters({ imports: els.filterImportsInput.checked });
+  });
+  els.filterReturnsInput.addEventListener("change", () => {
+    setTraceFilters({ returns: els.filterReturnsInput.checked });
+  });
+  els.filterOutputInput.addEventListener("change", () => {
+    setTraceFilters({ output: els.filterOutputInput.checked });
+  });
+  els.filterExceptionsInput.addEventListener("change", () => {
+    setTraceFilters({ exceptions: els.filterExceptionsInput.checked });
   });
 
   els.tracePrevButton.addEventListener("click", () => {
@@ -3311,6 +3547,7 @@ function bindEvents() {
 
 async function boot() {
   bindEvents();
+  loadTraceFilterSettings();
   try {
     setStepReplay(localStorage.getItem(STORAGE_KEYS.stepReplay) === "1");
   } catch {
