@@ -1,6 +1,6 @@
 {
   "name": "@codetrace/cli",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "description": "Browser-based Python runtime trace explorer.",
   "license": "MIT",
   "engines": {

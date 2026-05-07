@@ -16,7 +16,7 @@ function printHelp() {
 
 Usage:
   ctrace serve [-h 127.0.0.1] [-p 3038]
-  ctrace run [-r DIR] [--max-events N] <command...>
+  ctrace run [-r DIR] [-l FILE] [--max-events N] [--trace-deps] <command...>
   ctrace doctor [-r DIR]
 
 Examples:
@@ -24,6 +24,7 @@ Examples:
   ctrace serve -h 0.0.0.0 -p 3038
   cd /path/to/project && ctrace run python app.py
   ctrace run -r /path/to/project python app.py
+  ctrace run -l /tmp/ctrace.log python app.py
   ctrace run -r /path/to/project /path/to/venv/bin/some-python-cli --help
   ctrace doctor
 `);
@@ -137,6 +138,195 @@ function traceLaunchForCommand(argv) {
   return { interpreter: "python3", pythonPathMode: "project" };
 }
 
+const ANSI_ENABLED = Boolean(process.stdout.isTTY) && !process.env.NO_COLOR;
+const ANSI = {
+  reset: "\x1b[0m",
+  dim: "\x1b[2m",
+  bold: "\x1b[1m",
+  blue: "\x1b[34m",
+  cyan: "\x1b[36m",
+  green: "\x1b[32m",
+  gray: "\x1b[90m",
+  magenta: "\x1b[35m",
+  red: "\x1b[31m",
+  yellow: "\x1b[33m",
+};
+
+function color(text, code) {
+  if (!ANSI_ENABLED || !code) {
+    return text;
+  }
+  return `${code}${text}${ANSI.reset}`;
+}
+
+function compactText(value, max = 120) {
+  const text = String(value ?? "").replace(/\s+/g, " ").trim();
+  if (text.length <= max) {
+    return text;
+  }
+  return `${text.slice(0, max - 1)}...`;
+}
+
+function valueSummary(value) {
+  if (!value || typeof value !== "object") {
+    return compactText(value, 80);
+  }
+  if (value.type === "NoneType" && value.value === null) {
+    return "None";
+  }
+  const parts = [];
+  if (value.type) {
+    parts.push(String(value.type));
+  }
+  if (Object.prototype.hasOwnProperty.call(value, "value")) {
+    parts.push(JSON.stringify(value.value));
+  } else if (value.repr) {
+    parts.push(value.repr);
+  }
+  if (value.len !== undefined) {
+    parts.push(`len=${value.len}`);
+  }
+  return compactText(parts.filter(Boolean).join(" "), 100);
+}
+
+function eventStyle(type) {
+  switch (type) {
+    case "trace_session":
+    case "shell_session":
+    case "start":
+      return { label: "START", color: ANSI.blue };
+    case "import":
+      return { label: "IMPORT", color: ANSI.yellow };
+    case "call":
+      return { label: "CALL", color: ANSI.cyan };
+    case "line":
+      return { label: "LINE", color: ANSI.gray };
+    case "return":
+      return { label: "RETURN", color: ANSI.green };
+    case "output":
+      return { label: "OUTPUT", color: ANSI.yellow };
+    case "exception":
+    case "fatal":
+      return { label: type === "fatal" ? "FATAL" : "EXCEPT", color: ANSI.red };
+    case "system_exit":
+    case "finish":
+    case "process_close":
+      return { label: "EXIT", color: ANSI.magenta };
+    case "limit":
+      return { label: "LIMIT", color: ANSI.red };
+    default:
+      return { label: String(type || "EVENT").toUpperCase().slice(0, 6), color: ANSI.gray };
+  }
+}
+
+function eventLocation(event) {
+  if (event.line && event.file) {
+    return `${event.file}:${event.line}`;
+  }
+  return event.file || event.script || event.module || "";
+}
+
+function formatEventMain(event) {
+  switch (event.type) {
+    case "trace_session":
+    case "shell_session":
+      return `trace ${event.command || ""}`;
+    case "start":
+      return event.script ? `script ${event.script}` : `module ${event.module || ""}`;
+    case "import": {
+      const fromlist = event.fromlist?.length ? ` {${event.fromlist.join(", ")}}` : "";
+      return `import ${event.module || ""}${fromlist}`;
+    }
+    case "call":
+      return `call ${event.function || "<unknown>"}()`;
+    case "line":
+      return event.source ? compactText(event.source, 150) : `line ${event.line || ""}`;
+    case "return":
+      return `return ${event.function || "<unknown>"}() -> ${valueSummary(event.returnValue) || "null"}`;
+    case "output": {
+      const stream = String(event.stream || "stdout").toUpperCase();
+      const text = String(event.text || "")
+        .replace(/\r/g, "\\r")
+        .replace(/\n/g, "\\n");
+      return `${stream} ${text ? compactText(text, 180) : "(empty write)"}`;
+    }
+    case "exception":
+      return `${event.exceptionType || "Exception"}: ${event.message || ""}`;
+    case "fatal":
+      return `${event.exceptionType || "Fatal"}: ${event.message || ""}`;
+    case "system_exit":
+      return `system exit ${event.code ?? ""}`;
+    case "finish":
+    case "process_close":
+      return `exit ${event.exitCode ?? ""}`;
+    case "limit":
+      return `${event.message || "trace limit reached"} (${event.maxEvents || ""})`;
+    default:
+      return compactText(JSON.stringify(event), 180);
+  }
+}
+
+function formatEventDetails(event) {
+  const details = [];
+  if (event.type === "call" && event.args && Object.keys(event.args).length) {
+    details.push(`args ${Object.entries(event.args)
+      .slice(0, 8)
+      .map(([name, value]) => `${name}=${valueSummary(value)}`)
+      .join(", ")}`);
+  }
+  if (event.type === "line") {
+    const changed = Object.entries(event.changed || {}).slice(0, 8);
+    const removed = (event.removed || []).slice(0, 8);
+    if (changed.length) {
+      details.push(`changed ${changed.map(([name, value]) => `${name}=${valueSummary(value)}`).join(", ")}`);
+    }
+    if (removed.length) {
+      details.push(`removed ${removed.join(", ")}`);
+    }
+  }
+  if (event.type === "fatal" && event.traceback) {
+    details.push(compactText(event.traceback.replace(/\s+/g, " "), 220));
+  }
+  return details;
+}
+
+function formatTraceEvent(event, displayId = event.id) {
+  const style = eventStyle(event.type);
+  const id = String(displayId ?? "").padStart(6, "0");
+  const depth = Math.max(0, Math.min(Number(event.depth || 0), 18));
+  const indent = "  ".repeat(depth);
+  const label = color(style.label.padEnd(6), style.color);
+  if (event.type === "output") {
+    const stream = String(event.stream || "stdout").toUpperCase();
+    const rawText = String(event.text || "");
+    if (rawText === "\n") {
+      return `${color(id, ANSI.dim)} ${label} ${stream} \\n`;
+    }
+    const text = rawText.replace(/\r/g, "\\r");
+    const outputLines = text.split("\n");
+    if (outputLines.at(-1) === "") {
+      outputLines.pop();
+    }
+    if (outputLines.length <= 1) {
+      return `${color(id, ANSI.dim)} ${label} ${stream} ${outputLines[0] || "(empty write)"}`;
+    }
+    const lines = [`${color(id, ANSI.dim)} ${label} ${stream}`];
+    for (const outputLine of outputLines) {
+      lines.push(`${color("       │", ANSI.dim)} ${outputLine}`);
+    }
+    return lines.join("\n");
+  }
+  const location = eventLocation(event);
+  const locationText = location ? color(` ${location}`, ANSI.dim) : "";
+  const main = formatEventMain(event);
+  const details = formatEventDetails(event);
+  const lines = [`${color(id, ANSI.dim)} ${label} ${indent}${main}${locationText}`];
+  for (const detail of details) {
+    lines.push(`${color("       │", ANSI.dim)} ${indent}${color(detail, ANSI.dim)}`);
+  }
+  return lines.join("\n");
+}
+
 function parseArgs(argv) {
   const first = argv[2];
   const options = {
@@ -147,6 +337,8 @@ function parseArgs(argv) {
     maxEvents: 20000,
     server: process.env.CODETRACE_SERVER || "http://127.0.0.1:3038",
     noServer: false,
+    traceDeps: false,
+    logFile: "",
     runCommand: [],
   };
 
@@ -172,6 +364,16 @@ function parseArgs(argv) {
           throw new Error("--no-server is only valid for ctrace run.");
         }
         options.noServer = true;
+      } else if (arg === "--trace-deps") {
+        if (options.command !== "run") {
+          throw new Error("--trace-deps is only valid for ctrace run.");
+        }
+        options.traceDeps = true;
+      } else if (arg === "--log" || arg === "-l") {
+        if (options.command !== "run") {
+          throw new Error("--log is only valid for ctrace run.");
+        }
+        options.logFile = argv[++i] || "";
       } else if (arg === "--") {
         if (options.command !== "run") {
           throw new Error("-- is only valid for ctrace run.");
@@ -218,14 +420,32 @@ async function runTraceCommand(options) {
   if (!Number.isInteger(options.maxEvents) || options.maxEvents < 1) {
     throw new Error(`Invalid --max-events: ${options.maxEvents}`);
   }
+  if (options.logFile === "") {
+    options.logFile = null;
+  }
 
   const rootPath = expandPath(options.project);
   const { interpreter, pythonPathMode } = traceLaunchForCommand(options.runCommand);
   const commandText = options.runCommand.join(" ");
+  const logPath = options.logFile ? expandPath(options.logFile) : null;
+  let logStream = null;
   let importTraceId = null;
   let importDisabled = Boolean(options.noServer);
+  let importStatus = options.noServer ? "disabled by --no-server" : "not connected";
   let importQueue = [];
   let flushing = false;
+
+  if (logPath) {
+    fs.mkdirSync(path.dirname(logPath), { recursive: true });
+    logStream = fs.createWriteStream(logPath, { flags: "w" });
+  }
+
+  function writeOutput(text) {
+    process.stdout.write(text);
+    if (logStream) {
+      logStream.write(text.replace(/\x1b\[[0-9;]*m/g, ""));
+    }
+  }
 
   async function startImportSession() {
     if (importDisabled || !options.server) {
@@ -243,12 +463,24 @@ async function runTraceCommand(options) {
       });
       if (!response.ok) {
         importDisabled = true;
+        let message = `${response.status} ${response.statusText}`;
+        try {
+          const payload = await response.json();
+          if (payload?.error) {
+            message = payload.error;
+          }
+        } catch {
+          // Keep the HTTP status if the server did not return JSON.
+        }
+        importStatus = `not connected: ${message}`;
         return;
       }
       const payload = await response.json();
       importTraceId = payload.traceId;
-    } catch {
+      importStatus = `connected ${options.server.replace(/\/$/, "")} project=${payload.projectId || "unknown"}`;
+    } catch (error) {
       importDisabled = true;
+      importStatus = `not connected: ${error.message}`;
     }
   }
 
@@ -291,14 +523,29 @@ async function runTraceCommand(options) {
 
   await startImportSession();
 
+  writeOutput(`${color("CodeTrace run", ANSI.bold)}\n`);
+  writeOutput(`${color("repo", ANSI.dim)}    ${rootPath}\n`);
+  writeOutput(`${color("command", ANSI.dim)} ${commandText}\n`);
+  writeOutput(`${color("web", ANSI.dim)}     ${importStatus}\n`);
+  if (logPath) {
+    writeOutput(`${color("log", ANSI.dim)}     ${logPath}\n`);
+  }
+  writeOutput("\n");
+  writeOutput(
+    `${color("trace", ANSI.dim)}   ${options.traceDeps ? "repo + dependencies" : "repo source only"}\n\n`,
+  );
+
   const child = spawn(interpreter, [TRACER_PATH], {
     cwd: rootPath,
-    stdio: ["pipe", "pipe", "inherit"],
+    env: { ...process.env, CODETRACE_EVENT_FD: "3" },
+    stdio: ["pipe", "inherit", "inherit", "pipe"],
   });
 
   let lineBuffer = "";
+  const eventStream = child.stdio[3];
+  let displayEventId = 0;
 
-  child.stdout.on("data", (chunk) => {
+  eventStream.on("data", (chunk) => {
     lineBuffer += chunk.toString("utf8");
     let newlineIndex = lineBuffer.indexOf("\n");
     while (newlineIndex >= 0) {
@@ -307,13 +554,11 @@ async function runTraceCommand(options) {
       if (line) {
         try {
           const event = JSON.parse(line);
-          if (event.type === "output") {
-            const target = event.stream === "stderr" ? process.stderr : process.stdout;
-            target.write(event.text || "");
-          }
+          displayEventId += 1;
+          writeOutput(`${formatTraceEvent(event, displayEventId)}\n`);
           enqueueTraceEvent(event);
         } catch {
-          process.stdout.write(`${line}\n`);
+          writeOutput(`${color("RAW", ANSI.gray)} ${line}\n`);
         }
       }
       newlineIndex = lineBuffer.indexOf("\n");
@@ -325,6 +570,7 @@ async function runTraceCommand(options) {
       rootPath,
       argv: options.runCommand,
       maxEvents: options.maxEvents,
+      traceDeps: options.traceDeps,
       pythonPathMode,
     }),
   );
@@ -334,18 +580,19 @@ async function runTraceCommand(options) {
     if (lineBuffer.trim()) {
       try {
         const event = JSON.parse(lineBuffer.trim());
-        if (event.type === "output") {
-          const target = event.stream === "stderr" ? process.stderr : process.stdout;
-          target.write(event.text || "");
-        }
+        displayEventId += 1;
+        writeOutput(`${formatTraceEvent(event, displayEventId)}\n`);
         enqueueTraceEvent(event);
       } catch {
-        process.stdout.write(`${lineBuffer}\n`);
+        writeOutput(`${color("RAW", ANSI.gray)} ${lineBuffer}\n`);
       }
     }
     flushImportQueue(true)
       .catch(() => {})
       .finally(() => {
+        if (logStream) {
+          logStream.end();
+        }
         if (signal) {
           process.kill(process.pid, signal);
           resolve();

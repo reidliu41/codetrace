@@ -18,6 +18,7 @@ const state = {
   graphSearchMatches: [],
   graphSearchIndex: -1,
   traceEvents: [],
+  traceEventSeq: 0,
   activeTraceNodeId: "",
   traceFilters: {
     repoOnly: true,
@@ -1293,7 +1294,11 @@ function visibleTraceWindow(events, limit = 420, focusIndex = -1) {
 }
 
 function traceNodeIdForEvent(event, index) {
-  return `trace:${event?.id ?? event?.__traceIndex ?? index}`;
+  return `trace:${event?.__traceIndex ?? event?.id ?? index}`;
+}
+
+function traceEventKey(event, index) {
+  return event?.__traceIndex ?? `${event?.id ?? "event"}:${index}`;
 }
 
 function normalizeTraceReplayIndex(events) {
@@ -1453,7 +1458,7 @@ function buildTraceGraph() {
 
   events.forEach((event, index) => {
     const id = traceNodeIdForEvent(event, index);
-    eventNodeByTraceId.set(event.id, id);
+    eventNodeByTraceId.set(traceEventKey(event, index), id);
     nodes.push({
       id,
       entityType: "trace",
@@ -1594,14 +1599,14 @@ function buildTraceGraph() {
   }
 
   const lastByFrame = new Map();
-  for (const event of events) {
-    const nodeId = eventNodeByTraceId.get(event.id);
+  for (const [index, event] of events.entries()) {
+    const nodeId = eventNodeByTraceId.get(traceEventKey(event, index));
     if (!nodeId || !event.frameId) {
       continue;
     }
     if (event.parentFrameId && lastByFrame.has(event.parentFrameId) && event.type === "call") {
       edges.push({
-        id: `trace-parent:${event.id}`,
+        id: `trace-parent:${traceEventKey(event, index)}`,
         type: "trace-parent",
         sourceId: lastByFrame.get(event.parentFrameId),
         targetId: nodeId,
@@ -1636,6 +1641,7 @@ function handleTraceEvent(event) {
   }
   if (event.type === "trace_session") {
     state.traceEvents = [];
+    resetTraceEventSequence();
     state.activeTraceNodeId = "";
     state.traceReplayIndex = state.stepReplay ? 0 : -1;
     state.nodePositions.clear();
@@ -1644,7 +1650,7 @@ function handleTraceEvent(event) {
       els.traceCommandInput.value = event.command;
     }
   }
-  state.traceEvents.push(event);
+  state.traceEvents.push(prepareTraceEvent(event));
   if (state.traceEvents.length > 30000) {
     state.traceEvents.shift();
   }
@@ -1660,7 +1666,7 @@ function applyTraceState(payload) {
   if (!payload || payload.projectId !== projectId()) {
     return;
   }
-  state.traceEvents = payload.events || [];
+  state.traceEvents = prepareTraceEvents(payload.events || []);
   state.traceRunning = Boolean(payload.running);
   if (payload.command) {
     els.traceCommandInput.value = payload.command;
@@ -1739,7 +1745,8 @@ async function startTraceRun(command) {
   setMode("trace");
   state.activeTraceNodeId = "";
   state.traceReplayIndex = state.stepReplay ? 0 : -1;
-  state.traceEvents = [
+  resetTraceEventSequence();
+  state.traceEvents = prepareTraceEvents([
     {
       id: `pending-${Date.now()}`,
       type: "trace_session",
@@ -1747,7 +1754,7 @@ async function startTraceRun(command) {
       command: trimmed,
       ts: Date.now() / 1000,
     },
-  ];
+  ]);
   state.traceRunning = true;
   state.nodePositions.clear();
   state.graph = buildTraceGraph();
@@ -3153,7 +3160,8 @@ function startShellCapture(command) {
   state.activeTraceNodeId = "";
   state.traceReplayIndex = state.stepReplay ? 0 : -1;
   state.nodePositions.clear();
-  state.traceEvents = [
+  resetTraceEventSequence();
+  state.traceEvents = prepareTraceEvents([
     {
       id: `shell-session-${state.shellEventId}`,
       type: "shell_session",
@@ -3162,7 +3170,7 @@ function startShellCapture(command) {
       ts: Date.now() / 1000,
       depth: 0,
     },
-  ];
+  ]);
   setMode("trace");
   els.traceMeta.textContent = traceMetaText();
   state.graph = buildTraceGraph();
@@ -3185,12 +3193,35 @@ function parseTraceJsonLine(line) {
   }
 }
 
+function resetTraceEventSequence() {
+  state.traceEventSeq = 0;
+}
+
+function prepareTraceEvent(event) {
+  if (!event || typeof event !== "object") {
+    return event;
+  }
+  if (event.__traceIndex === undefined) {
+    state.traceEventSeq += 1;
+    event.__traceIndex = state.traceEventSeq;
+  } else {
+    state.traceEventSeq = Math.max(state.traceEventSeq, Number(event.__traceIndex) || 0);
+  }
+  return event;
+}
+
+function prepareTraceEvents(events) {
+  resetTraceEventSequence();
+  return (events || []).map((event) => prepareTraceEvent(event));
+}
+
 function ingestShellTraceEvent(event) {
   if (!state.project?.id) {
     return;
   }
   if (!state.shellTraceReceived) {
     state.traceEvents = [];
+    resetTraceEventSequence();
     state.activeTraceNodeId = "";
     state.traceReplayIndex = state.stepReplay ? 0 : -1;
     state.nodePositions.clear();
@@ -3199,11 +3230,11 @@ function ingestShellTraceEvent(event) {
   }
   state.shellTraceReceived += 1;
   state.shellEventId += 1;
-  state.traceEvents.push({
+  state.traceEvents.push(prepareTraceEvent({
     projectId: projectId(),
     traceId: "shell-ctrace",
     ...event,
-  });
+  }));
   if (state.traceEvents.length > 30000) {
     state.traceEvents.shift();
   }
