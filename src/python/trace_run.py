@@ -13,13 +13,31 @@ import traceback
 ORIGINAL_STDOUT = sys.stdout
 ORIGINAL_STDERR = sys.stderr
 ORIGINAL_IMPORT = builtins.__import__
+EVENT_OUTPUT = None
+
+EXCLUDED_PROJECT_DIR_NAMES = {
+    ".git",
+    ".hg",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".ruff_cache",
+    ".tox",
+    ".venv",
+    "__pycache__",
+    "dist-packages",
+    "env",
+    "node_modules",
+    "site-packages",
+    "venv",
+}
 
 
 class TraceState:
-    def __init__(self, root_path, max_events=20000, extra_files=None):
+    def __init__(self, root_path, max_events=20000, extra_files=None, trace_deps=False):
         self.root_path = os.path.realpath(root_path)
         self.extra_files = set(os.path.realpath(file_path) for file_path in (extra_files or []))
         self.max_events = max_events
+        self.trace_deps = trace_deps
         self.event_id = 0
         self.frame_ids = {}
         self.frame_depths = {}
@@ -37,11 +55,25 @@ class TraceState:
         if not file_path or file_path.startswith("<"):
             return False
         real_path = os.path.realpath(file_path)
-        return (
-            real_path == self.root_path
-            or real_path.startswith(self.root_path + os.sep)
-            or real_path in self.extra_files
-        )
+        if real_path in self.extra_files:
+            return True
+        if real_path != self.root_path and not real_path.startswith(self.root_path + os.sep):
+            return False
+        if self.trace_deps:
+            return True
+        return not self.is_excluded_project_path(real_path)
+
+    def is_excluded_project_path(self, real_path):
+        try:
+            relative_parts = os.path.relpath(real_path, self.root_path).split(os.sep)
+        except ValueError:
+            return False
+        for part in relative_parts:
+            if part in EXCLUDED_PROJECT_DIR_NAMES:
+                return True
+            if part.endswith(".egg-info") or part.endswith(".dist-info"):
+                return True
+        return False
 
     def next_id(self):
         self.event_id += 1
@@ -65,8 +97,9 @@ class TraceState:
             "ts": time.time(),
             **payload,
         }
-        ORIGINAL_STDOUT.write(json.dumps(event, ensure_ascii=False, separators=(",", ":")) + "\n")
-        ORIGINAL_STDOUT.flush()
+        output = event_output()
+        output.write(json.dumps(event, ensure_ascii=False, separators=(",", ":")) + "\n")
+        output.flush()
 
     def frame_id(self, frame):
         key = id(frame)
@@ -125,6 +158,18 @@ class TraceState:
 TRACE_STATE = None
 
 
+def event_output():
+    global EVENT_OUTPUT
+    if EVENT_OUTPUT is not None:
+        return EVENT_OUTPUT
+    event_fd = os.environ.get("CODETRACE_EVENT_FD")
+    if event_fd:
+        EVENT_OUTPUT = os.fdopen(int(event_fd), "w", encoding="utf-8", buffering=1, closefd=False)
+    else:
+        EVENT_OUTPUT = ORIGINAL_STDOUT
+    return EVENT_OUTPUT
+
+
 def summarize_value(value):
     value_type = type(value).__name__
     try:
@@ -152,16 +197,38 @@ class EventStream:
     def __init__(self, stream_name):
         self.stream_name = stream_name
 
+    @property
+    def original_stream(self):
+        return ORIGINAL_STDERR if self.stream_name == "stderr" else ORIGINAL_STDOUT
+
+    @property
+    def encoding(self):
+        return getattr(self.original_stream, "encoding", "utf-8")
+
+    @property
+    def errors(self):
+        return getattr(self.original_stream, "errors", "replace")
+
+    @property
+    def buffer(self):
+        return self.original_stream.buffer
+
     def write(self, text):
         if text and TRACE_STATE is not None:
             TRACE_STATE.emit("output", {"stream": self.stream_name, "text": text})
         return len(text or "")
 
     def flush(self):
-        return None
+        return self.original_stream.flush()
 
     def isatty(self):
-        return False
+        return self.original_stream.isatty()
+
+    def fileno(self):
+        return self.original_stream.fileno()
+
+    def writable(self):
+        return True
 
 
 def trace_func(frame, event, arg):
@@ -312,8 +379,14 @@ def main():
     root_path = os.path.realpath(request["rootPath"])
     argv = request.get("argv") or []
     max_events = int(request.get("maxEvents") or 20000)
+    trace_deps = bool(request.get("traceDeps"))
     python_path_mode = request.get("pythonPathMode") or "project"
-    TRACE_STATE = TraceState(root_path, max_events=max_events, extra_files=trace_entry_files(root_path, argv))
+    TRACE_STATE = TraceState(
+        root_path,
+        max_events=max_events,
+        extra_files=trace_entry_files(root_path, argv),
+        trace_deps=trace_deps,
+    )
 
     sys.stdout = EventStream("stdout")
     sys.stderr = EventStream("stderr")

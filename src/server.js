@@ -1716,11 +1716,60 @@ function startTraceSession(project, command) {
   return session;
 }
 
+function findProjectForImportedRoot(rootPath) {
+  const exactProject = projects.get(projectIdForRoot(rootPath));
+  if (exactProject && exactProject.index) {
+    return exactProject;
+  }
+
+  const candidates = [...projects.values()]
+    .filter((project) => {
+      if (!project.index) {
+        return false;
+      }
+      return (
+        project.rootPath === rootPath ||
+        project.rootPath.startsWith(`${rootPath}${path.sep}`) ||
+        rootPath.startsWith(`${project.rootPath}${path.sep}`)
+      );
+    })
+    .sort((a, b) => b.rootPath.length - a.rootPath.length);
+
+  if (activeProjectId) {
+    const active = candidates.find((project) => project.id === activeProjectId);
+    if (active) {
+      return active;
+    }
+  }
+  return candidates[0] || null;
+}
+
+function normalizeImportedTraceEvent(session, event) {
+  if (!event || typeof event !== "object" || !event.file) {
+    return event;
+  }
+  const project = projects.get(session.projectId);
+  if (!project) {
+    return event;
+  }
+  const traceRootPath = session.traceRootPath || project.rootPath;
+  const eventFile = path.resolve(path.isAbsolute(event.file) ? event.file : path.join(traceRootPath, event.file));
+  if (eventFile === project.rootPath || eventFile.startsWith(`${project.rootPath}${path.sep}`)) {
+    return {
+      ...event,
+      file: path.relative(project.rootPath, eventFile),
+    };
+  }
+  return {
+    ...event,
+    file: eventFile,
+  };
+}
+
 function startImportedTraceSession(rootPath, command, argv = []) {
   const resolvedRoot = expandPath(rootPath || "");
-  const projectId = projectIdForRoot(resolvedRoot);
-  const project = projects.get(projectId);
-  if (!project || !project.index) {
+  const project = findProjectForImportedRoot(resolvedRoot);
+  if (!project) {
     throw new Error(`Repo is not indexed in this CodeTrace server: ${resolvedRoot}`);
   }
 
@@ -1742,6 +1791,7 @@ function startImportedTraceSession(rootPath, command, argv = []) {
     startedAt: new Date().toISOString(),
     lineBuffer: "",
     imported: true,
+    traceRootPath: resolvedRoot,
   };
   traceSessions.set(project.id, session);
 
@@ -1764,7 +1814,7 @@ function importTraceEvents(traceId, events = []) {
   }
 
   for (const event of events) {
-    emitTraceEvent(session, event);
+    emitTraceEvent(session, normalizeImportedTraceEvent(session, event));
     if (["finish", "process_close", "fatal"].includes(event.type)) {
       session.running = false;
     }
